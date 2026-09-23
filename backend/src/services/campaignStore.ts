@@ -814,42 +814,44 @@ export function createCampaign(input: CampaignInput): CampaignRecord {
     maxPerContributor: input.maxPerContributor,
   };
 
-  db.prepare(
-    `INSERT INTO campaigns (
-      id, creator, title, description, accepted_tokens_json, target_amount, pledged_amount, deadline, created_at, claimed_at, failed_at, metadata_json, max_per_contributor
-    ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-    )`,
-  ).run(
-    campaign.id,
-    campaign.creator,
-    campaign.title,
-    campaign.description,
-    JSON.stringify(campaign.acceptedTokens),
-    campaign.targetAmount,
-    campaign.pledgedAmount,
-    campaign.deadline,
-    campaign.createdAt,
-    null,
-    null,
-    campaign.metadata ? JSON.stringify(campaign.metadata) : null,
-    campaign.maxPerContributor ?? null,
-  );
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO campaigns (
+        id, creator, title, description, accepted_tokens_json, target_amount, pledged_amount, deadline, created_at, claimed_at, failed_at, metadata_json, max_per_contributor
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      )`,
+    ).run(
+      campaign.id,
+      campaign.creator,
+      campaign.title,
+      campaign.description,
+      JSON.stringify(campaign.acceptedTokens),
+      campaign.targetAmount,
+      campaign.pledgedAmount,
+      campaign.deadline,
+      campaign.createdAt,
+      null,
+      null,
+      campaign.metadata ? JSON.stringify(campaign.metadata) : null,
+      campaign.maxPerContributor ?? null,
+    );
 
-  recordEvent(
-    campaign.id,
-    'created',
-    campaign.createdAt,
-    campaign.creator,
-    undefined,
-    {
-      title: campaign.title,
-      acceptedTokens: campaign.acceptedTokens,
-      targetAmount: campaign.targetAmount,
-      deadline: campaign.deadline,
-    },
-    { source: 'local' } as BlockchainMetadata,
-  );
+    recordEvent(
+      campaign.id,
+      'created',
+      campaign.createdAt,
+      campaign.creator,
+      undefined,
+      {
+        title: campaign.title,
+        acceptedTokens: campaign.acceptedTokens,
+        targetAmount: campaign.targetAmount,
+        deadline: campaign.deadline,
+      },
+      { source: 'local' } as BlockchainMetadata,
+    );
+  })();
 
   return campaign;
 }
@@ -1321,15 +1323,18 @@ export function softDeleteCampaign(campaignId: string): CampaignRecord {
   }
 
   const deletedAt = nowInSeconds();
-  const changes = db
-    .prepare(`UPDATE campaigns SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`)
-    .run(deletedAt, campaignId);
 
-  if (changes.changes === 0) {
-    throw toServiceError('Campaign not found or already deleted.', 404, 'NOT_FOUND');
-  }
+  db.transaction(() => {
+    const changes = db
+      .prepare(`UPDATE campaigns SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`)
+      .run(deletedAt, campaignId);
 
-  recordEvent(campaignId, 'archived', deletedAt, campaign.creator);
+    if (changes.changes === 0) {
+      throw toServiceError('Campaign not found or already deleted.', 404, 'NOT_FOUND');
+    }
+
+    recordEvent(campaignId, 'archived', deletedAt, campaign.creator);
+  })();
 
   return getCampaign(campaignId)!;
 }
@@ -1354,15 +1359,18 @@ export function restoreCampaign(campaignId: string): CampaignRecord {
   }
 
   const restoredAt = nowInSeconds();
-  const changes = db
-    .prepare(`UPDATE campaigns SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`)
-    .run(campaignId);
 
-  if (changes.changes === 0) {
-    throw toServiceError('Campaign not found or not archived.', 404, 'NOT_FOUND');
-  }
+  db.transaction(() => {
+    const changes = db
+      .prepare(`UPDATE campaigns SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`)
+      .run(campaignId);
 
-  recordEvent(campaignId, 'restored', restoredAt, campaign.creator);
+    if (changes.changes === 0) {
+      throw toServiceError('Campaign not found or not archived.', 404, 'NOT_FOUND');
+    }
+
+    recordEvent(campaignId, 'restored', restoredAt, campaign.creator);
+  })();
 
   return getCampaign(campaignId)!;
 }
@@ -1415,39 +1423,42 @@ export function refundContributor(
   const refundedAmount = round(refundablePledges.reduce((sum, pledge) => sum + pledge.amount, 0));
   const refundedAt = reconciliation?.createdAt ?? nowInSeconds();
 
-  db.prepare(
-    `UPDATE pledges SET refunded_at = ? WHERE campaign_id = ? AND contributor = ? AND refunded_at IS NULL`,
-  ).run(refundedAt, campaignId, contributor);
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE pledges SET refunded_at = ? WHERE campaign_id = ? AND contributor = ? AND refunded_at IS NULL`,
+    ).run(refundedAt, campaignId, contributor);
 
-  db.prepare(`UPDATE campaigns SET pledged_amount = pledged_amount - ? WHERE id = ?`).run(
-    refundedAmount,
-    campaignId,
-  );
+    db.prepare(`UPDATE campaigns SET pledged_amount = pledged_amount - ? WHERE id = ?`).run(
+      refundedAmount,
+      campaignId,
+    );
 
-  recordEvent(campaignId, 'refunded', refundedAt, contributor, refundedAmount, {
-    refundedPledgeCount: refundablePledges.length,
-    refundSource: reconciliation?.source ?? 'local',
-    txHash: reconciliation?.txHash,
-    contractId: reconciliation?.contractId,
-    networkPassphrase: reconciliation?.networkPassphrase,
-    rpcUrl: reconciliation?.rpcUrl,
-    walletAddress: reconciliation?.walletAddress,
-    ledger: reconciliation?.ledger,
-    latestLedger: reconciliation?.latestLedger,
-  });
+    recordEvent(campaignId, 'refunded', refundedAt, contributor, refundedAmount, {
+      refundedPledgeCount: refundablePledges.length,
+      refundSource: reconciliation?.source ?? 'local',
+      txHash: reconciliation?.txHash,
+      contractId: reconciliation?.contractId,
+      networkPassphrase: reconciliation?.networkPassphrase,
+      rpcUrl: reconciliation?.rpcUrl,
+      walletAddress: reconciliation?.walletAddress,
+      ledger: reconciliation?.ledger,
+      latestLedger: reconciliation?.latestLedger,
+    });
+
+    createNotification({
+      campaignId,
+      type: 'refund_available',
+      title: `Refund processed for "${campaign.title}"`,
+      body: `${refundedAmount} ${campaign.assetCode} has been refunded to your wallet`,
+      targetWallet: contributor,
+    });
+  })();
 
   void dispatchWebhook('pledge_refunded', campaignId, {
     contributor,
     refundedAmount,
     refundedPledgeCount: refundablePledges.length,
     refundedAt,
-  });
-  createNotification({
-    campaignId,
-    type: 'refund_available',
-    title: `Refund processed for "${campaign.title}"`,
-    body: `${refundedAmount} ${campaign.assetCode} has been refunded to your wallet`,
-    targetWallet: contributor,
   });
 
   return {

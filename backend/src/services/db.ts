@@ -195,6 +195,15 @@ function migrate(database: SQLiteDatabase): void {
       attempts      INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS campaign_comments (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id TEXT NOT NULL,
+      author      TEXT NOT NULL,
+      body        TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_pledges_campaign_id ON pledges(campaign_id);
     CREATE INDEX IF NOT EXISTS idx_pledges_contributor ON pledges(contributor, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_campaign_events_campaign_id ON campaign_events(campaign_id);
@@ -331,7 +340,7 @@ function migrate(database: SQLiteDatabase): void {
       actor_wallet  TEXT,
       is_read       INTEGER NOT NULL DEFAULT 0,
       created_at    INTEGER NOT NULL,
-      FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
+      FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
     );
 
     CREATE INDEX IF NOT EXISTS idx_notifications_target_wallet
