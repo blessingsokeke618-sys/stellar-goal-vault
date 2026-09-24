@@ -191,3 +191,44 @@ describe('Fixture isolation', () => {
     expect(xlmDetail.body.data.pledgedAmount).toBe(0);
   });
 });
+
+describe('Large-dataset regression coverage for campaign detail loading', () => {
+  it('loads campaign detail with many pledges efficiently', async () => {
+    const campaignId = await createCampaign({
+      title: 'Large dataset campaign',
+      targetAmount: 10_000,
+      acceptedTokens: ['XLM'],
+    });
+
+    // Create a realistic larger fixture of pledges to exercise the loading path
+    const pledgeCount = 500;
+    const pledges: Promise<ReturnType<typeof request>>[] = [];
+
+    for (let i = 0; i < pledgeCount; i++) {
+      pledges.push(
+        request(app)
+          .post(`/api/campaigns/${campaignId}/pledges`)
+          .send(buildPledgeInput({ amount: 20, assetCode: 'XLM' })),
+      );
+    }
+
+    // Wait for all pledges to be created
+    const responses = await Promise.all(pledges);
+    responses.forEach((res) => {
+      expect(res.status).toBe(201);
+    });
+
+    // Load the campaign detail and verify correctness at scale
+    const detailResponse = await request(app).get(`/api/campaigns/${campaignId}`);
+    expect(detailResponse.status).toBe(200);
+    expect(detailResponse.body.data.pledgedAmount).toBe(pledgeCount * 20);
+    expect(detailResponse.body.data.progress.status).toBe('open');
+
+    // Verify that the response structure is stable and contains expected fields
+    expect(detailResponse.body.data).toHaveProperty('id');
+    expect(detailResponse.body.data).toHaveProperty('title');
+    expect(detailResponse.body.data).toHaveProperty('pledgedAmount');
+    expect(detailResponse.body.data).toHaveProperty('targetAmount');
+    expect(detailResponse.body.data).toHaveProperty('progress');
+  });
+});

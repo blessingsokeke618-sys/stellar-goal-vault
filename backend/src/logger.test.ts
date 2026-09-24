@@ -113,3 +113,21 @@ describe('logger', () => {
     expect(payload.err.name).toBe('Error');
   });
 });
+
+describe('redactSensitive (issue #965)', () => {
+  it('redacts authorization headers and tokens from dependency/log payloads', async () => {
+    const { redactSensitive } = await import('./logger');
+    const redacted = redactSensitive({
+      authorization: 'Bearer secret-token',
+      apiKey: 'abc',
+      message: 'ok',
+      nested: { privateKey: '0xdead', path: '/deps' },
+    }) as Record<string, unknown>;
+    expect(redacted.authorization).toBe('[REDACTED]');
+    expect(redacted.apiKey).toBe('[REDACTED]');
+    expect(redacted.message).toBe('ok');
+    expect((redacted.nested as Record<string, unknown>).privateKey).toBe('[REDACTED]');
+    expect((redacted.nested as Record<string, unknown>).path).toBe('/deps');
+  });
+});
+

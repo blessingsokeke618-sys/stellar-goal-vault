@@ -29,7 +29,9 @@ export const envSchema = z
       .describe('default: testnet passphrase in non-production; required in production'),
 
     // CORS & Authentication
-    ALLOWED_ORIGINS: z.string().optional().describe('default: (empty — all origins allowed in dev)'),
+    // SECURITY: Default is empty (allows all) for local dev convenience. In production, this MUST be set to explicit origins.
+    // Risk: Leaving this empty or using '*' in production allows any website to make authenticated requests to your API (CSRF/credential theft).
+    ALLOWED_ORINS: z.string().optional().describe('default: (empty — all origins allowed in dev); REQUIRED in production'),
     CORS_ALLOWED_ORIGINS: z.string().optional().describe('backwards-compatible alias for ALLOWED_ORIGINS'),
     API_KEYS: z.string().optional().describe('Comma-separated valid API keys; required in production'),
 
@@ -131,7 +133,7 @@ export const envSchema = z
           code: z.ZodIssueCode.custom,
           path: ['ALLOWED_ORIGINS'],
           message:
-            'ALLOWED_ORIGINS must be set to explicit allowed origins in production (wildcard "*" and empty origins are not allowed)',
+            'ALLOWED_ORIGINS is required in production. Set to explicit allowed origins (e.g., https://example.com). Wildcard "*" and empty origins are not allowed in production.',
         });
       }
     }

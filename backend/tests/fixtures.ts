@@ -10,6 +10,7 @@ import type { CampaignInput, PledgeInput } from '../src/services/campaignStore';
  *   setup blocks.
  * - A frozen clock so time-dependent states (open/funded/failed) never depend
  *   on the wall clock and cannot flake at day boundaries.
+ * - Large dataset fixtures for regression testing campaign detail loading performance.
  *
  * Nothing here performs I/O; import these into tests and pass the results to
  * the store or the HTTP API.
@@ -97,4 +98,29 @@ export function freezeClock(seconds: number = FIXTURE_EPOCH_SECONDS): Clock {
       spy.mockRestore();
     },
   };
+}
+
+/**
+ * Generate a large dataset of pledges for a single campaign.
+ * Used for performance regression testing of campaign detail loading.
+ *
+ * @param count - Number of pledges to generate.
+ * @param campaignId - The ID of the campaign these pledges belong to.
+ * @returns Array of PledgeInput objects.
+ */
+export function buildLargePledgeDataset(count: number, campaignId: string): PledgeInput[] {
+  const pledges: PledgeInput[] = [];
+  for (let i = 0; i < count; i++) {
+    // Use deterministic but varied data to simulate realistic distribution
+    const contributorIndex = i % Object.keys(WALLETS).length;
+    const walletKey = Object.keys(WALLETS)[contributorIndex] as keyof typeof WALLETS;
+    const amount = (i % 10) * 10 + 10; // 10, 20, ..., 100
+
+    pledges.push({
+      contributor: WALLETS[walletKey],
+      amount,
+      assetCode: 'USDC',
+    });
+  }
+  return pledges;
 }

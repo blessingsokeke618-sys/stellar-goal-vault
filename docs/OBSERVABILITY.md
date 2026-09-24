@@ -28,8 +28,25 @@ The tests check presence and type only, never exact timestamps, durations or ids
 ## Health: `GET /api/health`
 
 `service` (string), `status` (`ok` or `degraded`), `timestamp` (ISO string), `uptimeSeconds`
-(number), `database` (object: `status`, `reachable`, optional `error`). Returns 503 when the
-database is unreachable.
+(number), `database` (object: `status`, `reachable`, optional `error`), `indexer` (object —
+Soroban event indexer lag/freshness). Returns 503 when the database is unreachable or the
+indexer is failing/stale.
+
+### `indexer` fields (issue #1024)
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `lastSuccessfulPollTime` | number \| null | Epoch ms of last successful RPC poll |
+| `lastKnownLedger` | number | Last ledger observed / resumed from |
+| `isHealthy` | boolean | Running, no failures, and not stale |
+| `consecutiveFailures` | number | RPC failures since last success |
+| `lagMs` | number \| null | Ms since last successful poll |
+| `freshness` | string | `fresh` \| `idle` \| `stale` \| `failing` \| `never` |
+| `staleLagMs` | number | Lag threshold for `stale` (env `SOROBAN_INDEXER_STALE_LAG_MS`) |
+| `freshLagMs` | number | Lag threshold for `fresh` (env `SOROBAN_INDEXER_FRESH_LAG_MS`) |
+
+`freshness` lets operators distinguish **healthy-but-idle** (`idle`) from **stale** (`stale`)
+and **failing** (`failing`).
 
 ## Structured logs
 

@@ -140,6 +140,10 @@ export function resetTime(): void {
   _currentTime = null;
 }
 
+export function getCurrentTimeState(): number | null {
+  return _currentTime;
+}
+
 function nowInSeconds(): number {
   return Math.floor(getCurrentTime() / 1000);
 }
@@ -153,6 +157,14 @@ function getCurrentTime(): number {
     return _currentTime;
   }
   return Date.now();
+}
+
+export function setGlobalTime(time: number): void {
+  _currentTime = time;
+}
+
+export function resetGlobalTime(): void {
+  _currentTime = null;
 }
 
 function round(value: number): number {
@@ -357,8 +369,37 @@ export function listContributorPledges(
 export function initCampaignStore(): void {
   initDb();
   const db = getDb();
+  db.exec(`CREATE TABLE IF NOT EXISTS campaigns (
+    id TEXT PRIMARY KEY,
+    creator TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    accepted_tokens_json TEXT NOT NULL,
+    target_amount REAL NOT NULL,
+    pledged_amount REAL NOT NULL DEFAULT 0,
+    deadline INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    claimed_at INTEGER,
+    failed_at INTEGER,
+    deleted_at INTEGER,
+    metadata_json TEXT,
+    max_per_contributor REAL
+  );`);
+  db.exec(`CREATE TABLE IF NOT EXISTS pledges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id TEXT NOT NULL,
+    contributor TEXT NOT NULL,
+    amount REAL NOT NULL,
+    asset_code TEXT NOT NULL,
+    token_id TEXT,
+    created_at INTEGER NOT NULL,
+    refunded_at INTEGER,
+    transaction_hash TEXT,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
+  );`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_pledges_campaign_id ON pledges(campaign_id);');
   db.exec('CREATE INDEX IF NOT EXISTS idx_pledges_contributor_created_at ON pledges(contributor, created_at);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_pledges_transaction_hash ON pledges(transaction_hash);');
 }
 
 function checkContributorLimit(
@@ -436,10 +477,21 @@ export interface ListCampaignsOptions {
   page?: number;
   limit?: number;
   sort?: CampaignSortField;
-  order?: SortOrder;
-  createdAfter?: number;
-  createdBefore?: number;
+  sortOrder?: SortOrder;
 }
+
+export interface CampaignDetailOptions {
+  includePledges?: boolean;
+  includeHistory?: boolean;
+}
+
+export interface CampaignDetailResult {
+  campaign: CampaignRecord;
+  progress: CampaignProgress;
+  pledges?: PledgeRecord[];
+  history?: BlockchainMetadata[];
+}
+
 
 export interface ListCampaignsResult {
   campaigns: CampaignRecord[];
@@ -488,8 +540,12 @@ const MAX_CAMPAIGN_DURATION_SECONDS = 60 * 60 * 24 * 180;
 /**
  * Retrieves a paginated, filtered list of campaigns from the database.
  *
- * @param options - Optional filters: `searchQuery`, `assetCode`, `status`, `includeDeleted`, `page`, `limit`.
- * @returns A {@link ListCampaignsResult} with the matching campaign records and the total count.
+ * Results are always ordered by the requested sort field plus a deterministic
+ * `id` tie-breaker, so consecutive `page`/`limit` requests form stable,
+ * non-overlapping chunks even when many campaigns share the same sort value.
+ *
+ * @param options - Optional filters: `searchQuery`, `assetCode`, `status`, `includeDeleted`, `page`, `limit`, `sort`, `order`.
+ * @returns A {@link ListCampaignsResult} with the matching campaign records, per-campaign active pledge counts, and the total count.
  */
 export function listCampaigns(options?: ListCampaignsOptions): ListCampaignsResult {
   const db = getDb();
@@ -588,22 +644,29 @@ export function listCampaigns(options?: ListCampaignsOptions): ListCampaignsResu
   const sortField = options?.sort ?? 'createdAt';
   const sortOrder = options?.order ?? 'desc';
   const orderDir = sortOrder === 'asc' ? 'ASC' : 'DESC';
-  let orderByClause: string;
+  let primaryOrder: string;
   switch (sortField) {
     case 'deadline':
-      orderByClause = `campaigns.deadline ${orderDir}`;
+      primaryOrder = `campaigns.deadline ${orderDir}`;
       break;
     case 'pledgedAmount':
-      orderByClause = `campaigns.pledged_amount ${orderDir}`;
+      primaryOrder = `campaigns.pledged_amount ${orderDir}`;
       break;
     case 'targetAmount':
-      orderByClause = `campaigns.target_amount ${orderDir}`;
+      primaryOrder = `campaigns.target_amount ${orderDir}`;
       break;
     case 'createdAt':
     default:
-      orderByClause = `campaigns.created_at ${orderDir}`;
+      primaryOrder = `campaigns.created_at ${orderDir}`;
       break;
   }
+
+  // Append a deterministic tie-breaker so OFFSET/LIMIT pagination is stable:
+  // rows sharing the same sort key always resolve to the same relative order
+  // across requests. Without it, SQLite is free to return tied rows in a
+  // different order per query, which makes later chunks duplicate or skip
+  // campaigns as the list grows.
+  const orderByClause = `${primaryOrder}, CAST(campaigns.id AS INTEGER) ${orderDir}`;
 
   const dataQuery = paginate
     ? `SELECT campaigns.*, COUNT(pledges.id) as pledge_count FROM campaigns LEFT JOIN pledges ON campaigns.id = pledges.campaign_id AND pledges.refunded_at IS NULL${whereClause} GROUP BY campaigns.id ORDER BY ${orderByClause} LIMIT ? OFFSET ?`
@@ -848,6 +911,9 @@ export function createCampaign(input: CampaignInput): CampaignRecord {
     maxPerContributor: input.maxPerContributor,
   };
 
+  // Explicit transaction: campaign INSERT + initial "created" event commit
+  // together so a mid-operation failure leaves no orphaned campaign row and
+  // retries remain safe (campaigns persistence / #870).
   db.transaction(() => {
     db.prepare(
       `INSERT INTO campaigns (
@@ -1357,7 +1423,8 @@ export function softDeleteCampaign(campaignId: string): CampaignRecord {
   }
 
   const deletedAt = nowInSeconds();
-
+  // Explicit transaction: soft-delete UPDATE + archived event commit together
+  // so partial failure leaves no inconsistent lifecycle state (#870).
   db.transaction(() => {
     const changes = db
       .prepare(`UPDATE campaigns SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`)
@@ -1393,7 +1460,8 @@ export function restoreCampaign(campaignId: string): CampaignRecord {
   }
 
   const restoredAt = nowInSeconds();
-
+  // Explicit transaction: restore UPDATE + restored event commit together
+  // so mid-operation failures leave no partial archived/restored state (#870).
   db.transaction(() => {
     const changes = db
       .prepare(`UPDATE campaigns SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`)

@@ -1,4 +1,4 @@
-import { getDb, initDb } from './db';
+import { ensureSeedWorkflowIndexes, getDb, initDb } from './db';
 
 const FIXED_NOW = 1_750_000_000;
 
@@ -160,15 +160,25 @@ function buildSeedSet(count: number): { campaigns: SeedCampaign[]; pledges: Seed
 export function seedDeterministicState(count: number = BASE_CAMPAIGNS.length): string[] {
   initDb();
   const db = getDb();
+  // Ensure seed-path indexes exist before wipe/reseed so FK checks and
+  // post-seed accounting queries use the intended plans.
+  ensureSeedWorkflowIndexes(db);
 
   const { campaigns, pledges } = buildSeedSet(count);
 
   // Use explicit transaction to ensure atomicity: either all data is seeded
   // or no partial state is persisted, allowing safe retries.
   db.transaction(() => {
+    // Child tables first so FK enforcement cannot leave a partial wipe.
+    // notifications / campaign_comments are not always empty in long-lived
+    // dev DBs; skipping them is a failure mode happy-path API tests miss.
+    db.prepare(`DELETE FROM notifications`).run();
+    db.prepare(`DELETE FROM campaign_comments`).run();
     db.prepare(`DELETE FROM campaign_events`).run();
     db.prepare(`DELETE FROM pledges`).run();
     db.prepare(`DELETE FROM campaigns`).run();
+    // FTS delete trigger is not guaranteed on every migrated DB — clear explicitly.
+    db.prepare(`DELETE FROM campaigns_fts`).run();
 
     const insertCampaign = db.prepare(
       `INSERT INTO campaigns (
