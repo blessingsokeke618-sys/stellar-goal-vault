@@ -130,11 +130,28 @@ function toServiceError(message: string, statusCode: number, code = 'BAD_REQUEST
   return error;
 }
 
+let _currentTime: number | null = null;
+
+export function setCurrentTime(time: number): void {
+  _currentTime = time;
+}
+
+export function resetTime(): void {
+  _currentTime = null;
+}
+
 function nowInSeconds(): number {
-  return Math.floor(Date.now() / 1000);
+  return Math.floor(getCurrentTime() / 1000);
 }
 
 function nowInMilliseconds(): number {
+  return getCurrentTime();
+}
+
+function getCurrentTime(): number {
+  if (_currentTime !== null) {
+    return _currentTime;
+  }
   return Date.now();
 }
 
@@ -340,6 +357,7 @@ export function listContributorPledges(
 export function initCampaignStore(): void {
   initDb();
   const db = getDb();
+  db.exec('CREATE INDEX IF NOT EXISTS idx_pledges_campaign_id ON pledges(campaign_id);');
   db.exec('CREATE INDEX IF NOT EXISTS idx_pledges_contributor_created_at ON pledges(contributor, created_at);');
 }
 
@@ -632,7 +650,21 @@ export function listCampaigns(options?: ListCampaignsOptions): ListCampaignsResu
  * @param campaignId - The unique campaign identifier.
  * @returns The {@link CampaignRecord} if found, or `undefined` if it does not exist.
  */
-export function getCampaign(campaignId: string): CampaignRecord | undefined {
+export interface GetCampaignOptions {
+  skipBalances?: boolean;
+}
+
+/**
+ * Fetches a single campaign by its ID.
+ *
+ * @param campaignId - The unique campaign identifier.
+ * @param options - Optional flags to skip loading expensive related data.
+ * @returns The {@link CampaignRecord} if found, or `undefined` if it does not exist.
+ */
+export function getCampaign(
+  campaignId: string,
+  options: GetCampaignOptions = {},
+): CampaignRecord | undefined {
   const db = getDb();
   const row = db.prepare(`SELECT * FROM campaigns WHERE id = ?`).get(campaignId) as
     CampaignRow | undefined;
@@ -651,7 +683,9 @@ export function getCampaign(campaignId: string): CampaignRecord | undefined {
       });
     }
     const campaign = rowToCampaign(row);
-    campaign.tokenBalances = getCampaignTokenBalances(campaignId);
+    if (!options.skipBalances) {
+      campaign.tokenBalances = getCampaignTokenBalances(campaignId);
+    }
     return campaign;
   }
   return undefined;
@@ -870,7 +904,7 @@ export function createCampaign(input: CampaignInput): CampaignRecord {
  */
 export function addPledge(campaignId: string, input: PledgeInput): CampaignRecord {
   const db = getDb();
-  const campaign = getCampaign(campaignId);
+  const campaign = getCampaign(campaignId, { skipBalances: true });
   if (!campaign) {
     throw toServiceError('Campaign not found.', 404, 'NOT_FOUND');
   }
@@ -896,7 +930,7 @@ export function addPledge(campaignId: string, input: PledgeInput): CampaignRecor
     );
   }
 
-  const progress = calculateProgress(campaign);
+  const progress = calculateProgress(campaign, undefined, 0); // avoid DB count query since we only need canPledge
   if (!progress.canPledge) {
     throw toServiceError('Campaign is no longer accepting pledges.', 400, 'INVALID_CAMPAIGN_STATE');
   }
@@ -1016,7 +1050,7 @@ export function reconcileOnChainPledge(
     return { campaign: getCampaign(campaignId)!, existing: true };
   }
 
-  const campaign = getCampaign(campaignId);
+  const campaign = getCampaign(campaignId, { skipBalances: true });
   if (!campaign) {
     throw toServiceError('Campaign not found.', 404, 'NOT_FOUND');
   }
@@ -1042,7 +1076,7 @@ export function reconcileOnChainPledge(
     );
   }
 
-  const progress = calculateProgress(campaign);
+  const progress = calculateProgress(campaign, undefined, 0); // avoid DB count query since we only need canPledge
   if (!progress.canPledge) {
     throw toServiceError('Campaign is no longer accepting pledges.', 400, 'INVALID_CAMPAIGN_STATE');
   }

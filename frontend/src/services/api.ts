@@ -166,7 +166,7 @@ export async function getCampaignHistory(campaignId: string): Promise<CampaignEv
   let page = 1;
   let hasMore = true;
 
-  while (hasMore) {
+  while (hasMore && page <= 50) {
     const body = await apiRequest<{
       data: CampaignEvent[];
       hasMore: boolean;
@@ -303,70 +303,70 @@ export async function getContributorProfile(address: string): Promise<Contributo
   const entry = leaderboard.find((e) => e.contributor === address);
   const rank = entry?.rank ?? 0;
 
-  const { data: campaigns } = await apiRequest<{ data: Campaign[] }>({
-    url: '/campaigns?limit=100',
-    method: 'GET',
-  });
-
   const backedCampaigns: ContributorBackedCampaign[] = [];
   const refundHistory: ContributorRefundEntry[] = [];
   let totalPledged = 0;
   let refundedAmount = 0;
 
-  for (const campaign of campaigns) {
-    let pledges: Pledge[] = [];
-    if (campaign.pledges) {
-      pledges = campaign.pledges.filter((p) => p.contributor === address);
-    } else {
-      try {
-        const body = await apiRequest<{ data: Pledge[] }>({
-          url: `/campaigns/${campaign.id}/pledges`,
-          method: 'GET',
-          params: { limit: 500 },
-        });
-        pledges = body.data.filter((p) => p.contributor === address);
-      } catch {
-        // skip campaigns where pledges can't be fetched
-        continue;
-      }
-    }
-
-    if (pledges.length === 0) continue;
-
-    let campaignPledged = 0;
-    let campaignRefunded = 0;
-    let earliestPledgeAt = Infinity;
-
-    for (const pledge of pledges) {
-      if (pledge.refundedAt) {
-        campaignRefunded += pledge.amount;
-        refundHistory.push({
-          campaignId: campaign.id,
-          title: campaign.title,
-          amount: pledge.amount,
-          assetCode: pledge.assetCode,
-          refundedAt: pledge.refundedAt,
-        });
-      } else {
-        campaignPledged += pledge.amount;
-      }
-      if (pledge.createdAt < earliestPledgeAt) {
-        earliestPledgeAt = pledge.createdAt;
-      }
-    }
-
-    totalPledged += campaignPledged + campaignRefunded;
-    refundedAmount += campaignRefunded;
-
-    backedCampaigns.push({
-      campaignId: campaign.id,
-      title: campaign.title,
-      status: campaign.progress.status,
-      pledgedAmount: campaignPledged,
-      refundedAmount: campaignRefunded,
-      assetCode: campaign.assetCode,
-      pledgedAt: earliestPledgeAt === Infinity ? 0 : earliestPledgeAt,
+  try {
+    const { data: pledges } = await apiRequest<{ data: any[] }>({
+      url: `/contributors/${address}/pledges`,
+      method: 'GET',
+      params: { limit: 1000 },
     });
+
+    const pledgesByCampaign = new Map<string, any[]>();
+    for (const pledge of pledges) {
+      if (!pledgesByCampaign.has(pledge.campaignId)) {
+        pledgesByCampaign.set(pledge.campaignId, []);
+      }
+      pledgesByCampaign.get(pledge.campaignId)!.push(pledge);
+    }
+
+    for (const [campaignId, campaignPledges] of pledgesByCampaign.entries()) {
+      let campaignPledged = 0;
+      let campaignRefunded = 0;
+      let earliestPledgeAt = Infinity;
+
+      // All pledges in the array belong to the same campaign, so metadata is consistent
+      const firstPledge = campaignPledges[0];
+      const title = firstPledge.campaignName || 'Unknown Campaign';
+      const status = firstPledge.claimedAt ? 'claimed' : firstPledge.pledgedAmount >= firstPledge.targetAmount ? 'funded' : 'open';
+      const assetCode = firstPledge.assetCode || 'USDC';
+
+      for (const pledge of campaignPledges) {
+        if (pledge.refundedAt) {
+          campaignRefunded += pledge.amount;
+          refundHistory.push({
+            campaignId,
+            title,
+            amount: pledge.amount,
+            assetCode: pledge.assetCode,
+            refundedAt: pledge.refundedAt,
+          });
+        } else {
+          campaignPledged += pledge.amount;
+        }
+        if (pledge.createdAt < earliestPledgeAt) {
+          earliestPledgeAt = pledge.createdAt;
+        }
+      }
+
+      totalPledged += campaignPledged + campaignRefunded;
+      refundedAmount += campaignRefunded;
+
+      backedCampaigns.push({
+        campaignId,
+        title,
+        status,
+        pledgedAmount: campaignPledged,
+        refundedAmount: campaignRefunded,
+        assetCode,
+        pledgedAt: earliestPledgeAt === Infinity ? 0 : earliestPledgeAt,
+      });
+    }
+  } catch (err) {
+    console.error('Error fetching contributor pledges', err);
   }
 
   const campaignCount = backedCampaigns.length;

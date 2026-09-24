@@ -93,6 +93,10 @@ async function fetchSorobanEvents(startLedger: number): Promise<SorobanEvent[]> 
     },
     { headers: { 'Content-Type': 'application/json' }, timeout: 10_000 },
   );
+  if (res.data?.result?.latestLedger != null) {
+    lastKnownLedger = Number(res.data.result.latestLedger);
+  }
+
   if (res.data?.result?.events && Array.isArray(res.data.result.events)) {
     return res.data.result.events as SorobanEvent[];
   }
@@ -373,12 +377,25 @@ async function indexSorobanEvents(): Promise<void> {
 
 let pollerTimer: ReturnType<typeof setTimeout> | null = null;
 let consecutiveFailures = 0;
+let lastSuccessfulPollTime: number | null = null;
+let lastKnownLedger: number | null = null;
+
+export function getIndexerStatus() {
+  return {
+    lastSuccessfulPollTime,
+    lastKnownLedger: lastKnownLedger ?? getLastProcessedLedger(),
+    isHealthy: consecutiveFailures === 0 && pollerTimer !== null,
+    consecutiveFailures,
+    lagMs: lastSuccessfulPollTime ? Date.now() - lastSuccessfulPollTime : null,
+  };
+}
 
 function scheduleNextPoll(delayMs: number): void {
   pollerTimer = setTimeout(async () => {
     try {
       await indexSorobanEvents();
       consecutiveFailures = 0;
+      lastSuccessfulPollTime = Date.now();
       scheduleNextPoll(POLL_INTERVAL_MS);
     } catch (err) {
       consecutiveFailures += 1;

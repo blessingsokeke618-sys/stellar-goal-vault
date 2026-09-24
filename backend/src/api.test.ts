@@ -56,6 +56,7 @@ beforeEach(() => {
   const db = getDb();
   db.prepare(`DELETE FROM campaign_events`).run();
   db.prepare(`DELETE FROM pledges`).run();
+  db.prepare(`DELETE FROM notifications`).run();
   db.prepare(`DELETE FROM campaigns`).run();
 });
 
@@ -98,6 +99,21 @@ async function get(apiPath: string) {
   const data = await response.json().catch(() => null);
   return { status: response.status, data };
 }
+
+describe('Health Checks', () => {
+  it('GET /api/health should return ok and indexer status', async () => {
+    const res = await get('/api/health');
+    // It might be 503 if indexer is failing (consecutiveFailures > 0 or not started)
+    expect(res.data.indexer).toBeDefined();
+    expect(typeof res.data.indexer.isHealthy).toBe('boolean');
+  });
+
+  it('GET /api/health/deep should return components status', async () => {
+    const res = await get('/api/health/deep');
+    expect(res.data.components.indexer).toBeDefined();
+    expect(typeof res.data.components.indexer.status).toBe('string');
+  });
+});
 
 describe('Campaign Lifecycle API', () => {
   it('covers create, pledge, claim end-to-end', async () => {

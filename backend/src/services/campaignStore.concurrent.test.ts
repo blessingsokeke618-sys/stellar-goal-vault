@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { initDb, resetDbForTests } from './db';
 import {
   initCampaignStore,
@@ -111,16 +112,19 @@ describe('Concurrent Pledge Race Condition Tests', () => {
       }),
     ];
 
-    const results = await Promise.all(pledgePromises);
+    const results = await Promise.allSettled(pledgePromises);
 
-    // All pledges should succeed (no hard cap on total)
-    // but campaign should not exceed target in practice
-    expect(results).toHaveLength(3);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+
+    // Only one pledge of 300 should succeed, next one will exceed 500 cap
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(2);
+    expect((rejected[0] as PromiseRejectedResult).reason.code).toBe('CAMPAIGN_FUNDING_CAP_EXCEEDED');
 
     const campaign = getCampaign(campaignId);
     expect(campaign).toBeDefined();
-    // Total pledged should be 900 (no hard cap enforced)
-    expect(campaign?.pledgedAmount).toBe(900);
+    expect(campaign?.pledgedAmount).toBe(300);
   });
 
   it('should enforce per-contributor limits with concurrent pledges', async () => {
